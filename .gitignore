@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Env
+.env
+*.env.local
+
+# Node
+node_modules/
+.next/
+frontend/package-lock.json
+
+# Logs
+logs/
+*.log
+
+# Docker
+*.sock
+
+# OS
+.DS_Store
+
+# IDE
+.claude/
+.agents/
+Untitled
