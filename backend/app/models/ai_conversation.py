@@ -29,6 +29,9 @@ class AIConversation(Base):
     brief = Column(JSON, nullable=True)
     status = Column(SAEnum(ConversationStatus), default=ConversationStatus.active)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    phone = Column(String, nullable=True, index=True)
+    awaiting_handoff = Column(Boolean, default=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     lead = relationship("Lead", back_populates="ai_conversations")
     appointment_briefs = relationship("AppointmentBrief", back_populates="ai_conversation")

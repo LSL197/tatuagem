@@ -8,6 +8,9 @@ from app.models.automation import Automation, TriggerType
 from app.models.user import User, UserRole
 from app.middleware.rbac import require_role
 from app.config import settings
+from app.services.sdr import get_or_create_lead, get_or_create_conversation, get_sdr_response, apply_intent
+from app.services.whatsapp import send_message
+from app.services.whisper import transcribe_whatsapp_audio
 
 router = APIRouter(prefix="/api/v1", tags=["automations"])
 
@@ -110,30 +113,96 @@ def verify_webhook(
 
 @router.post("/webhooks/whatsapp")
 async def receive_webhook(request: Request, db: Session = Depends(get_db)):
-    payload = await request.json()
+    """
+    Endpoint de entrada para todas as mensagens WhatsApp via Meta Cloud API.
+
+    Fluxo:
+    1. Parse do payload Meta
+    2. Filtragem por tipo (aceita text e audio, ignora o resto)
+    3. Transcrição de áudio se necessário
+    4. Busca/criação de Lead e AIConversation
+    5. Append da mensagem ao histórico
+    6. Chamada ao SDR service
+    7. Aplicação do intent detectado
+    8. Persistência e envio da resposta
+
+    Retorna 200 OK sempre (Meta exige isso — erros são logados, não propagados)
+    """
     try:
-        entry = payload["entry"][0]
-        changes = entry["changes"][0]["value"]
+        payload = await request.json()
+    except Exception:
+        return {"status": "ok"}
+
+    try:
+        entry = payload.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0].get("value", {})
         messages = changes.get("messages", [])
+
         for message in messages:
-            if message.get("type") != "text":
+            message_type = message.get("type", "")
+            phone = message.get("from", "")
+
+            if not phone:
                 continue
-            text = message["text"]["body"].lower().strip()
-            phone = message["from"]
 
-            active_automations = db.query(Automation).filter(
-                Automation.active == True,
-                Automation.trigger_type == TriggerType.keyword_whatsapp,
-            ).all()
+            # --- Extração do texto da mensagem ---
+            text_body: str = ""
 
-            for automation in active_automations:
-                keyword = automation.trigger_config.get("keyword", "").lower()
-                if keyword and keyword in text:
-                    from app.workers.celery_app import celery_app
-                    celery_app.send_task(
-                        "app.workers.flow_engine.run_flow",
-                        args=[str(automation.id), {"phone": phone, "message": text}],
-                    )
-    except (KeyError, IndexError):
-        pass
+            if message_type == "text":
+                text_body = message.get("text", {}).get("body", "").strip()
+
+            elif message_type == "audio":
+                # Áudio: transcreve via Whisper antes de processar
+                media_id = message.get("audio", {}).get("id", "")
+                if media_id and settings.whatsapp_token:
+                    text_body = await transcribe_whatsapp_audio(media_id, settings.whatsapp_token)
+                if not text_body:
+                    # Transcrição falhou ou sem conteúdo — ignora silenciosamente
+                    continue
+
+            else:
+                # Stickers, documentos, localização, etc — ignora
+                continue
+
+            if not text_body:
+                continue
+
+            # --- Lead e conversa ---
+            lead = get_or_create_lead(phone, db)
+            conversation = get_or_create_conversation(lead, phone, db)
+
+            # Append da mensagem do usuário ao histórico
+            messages_history = list(conversation.messages or [])
+            messages_history.append({"role": "user", "content": text_body})
+            conversation.messages = messages_history
+
+            # Persiste lead e mensagem do usuário antes de chamar a IA
+            # (garante que o contato fica salvo mesmo se a IA falhar)
+            db.add(conversation)
+            db.add(lead)
+            db.commit()
+
+            # --- Chamada ao SDR ---
+            intent, clean_response = await get_sdr_response(conversation, db)
+
+            # Append da resposta da IA ao histórico
+            messages_history.append({"role": "assistant", "content": clean_response})
+            conversation.messages = messages_history
+
+            # Aplica efeitos colaterais do intent (tags no lead, flag handoff)
+            apply_intent(intent, lead, conversation, db)
+
+            # Persiste resposta da IA e intents
+            db.add(conversation)
+            db.add(lead)
+            db.commit()
+
+            # Envia resposta ao cliente
+            await send_message(phone, clean_response)
+
+    except Exception as e:
+        # Loga o erro mas retorna 200 para o Meta não retentar
+        import logging
+        logging.getLogger(__name__).error(f"Erro no webhook WhatsApp: {e}", exc_info=True)
+
     return {"status": "ok"}
