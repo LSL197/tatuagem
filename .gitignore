@@ -25,6 +25,10 @@ logs/
 # OS
 .DS_Store
 
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
 # IDE
 .claude/
 .agents/

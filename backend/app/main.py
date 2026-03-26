@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from app.database import engine, Base
 import app.models  # noqa: F401 — imports all models so Base knows them
 
-from app.routers import auth, users, appointments, leads, financial, metrics, automations, ai, settings
+from app.routers import auth, users, appointments, leads, financial, metrics, automations, ai, settings, chat
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ app.include_router(metrics.router)
 app.include_router(automations.router)
 app.include_router(ai.router)
 app.include_router(settings.router)
+app.include_router(chat.router)
 
 
 @app.get("/health")
